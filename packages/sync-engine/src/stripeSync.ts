@@ -34,6 +34,7 @@ import { activeEntitlementSchema } from './schemas/active_entitlement'
 import { featureSchema } from './schemas/feature'
 import { invoicePaymentSchema } from './schemas/invoice_payment'
 import type { PoolConfig } from 'pg'
+import { couponSchema } from './schemas/coupons'
 
 function getUniqueIds<T>(entries: T[], key: string): string[] {
   const set = new Set(
@@ -160,6 +161,21 @@ export class StripeSync {
         )
         break
       }
+      case 'coupon.created':
+      case 'coupon.updated':
+      case 'coupon.deleted': {
+        const { entity: coupon, refetched } = await this.fetchOrUseWebhookData(
+          event.data.object as Stripe.Coupon,
+          (id) => this.stripe.coupons.retrieve(id)
+        )
+
+        this.config.logger?.info(
+          `Received webhook ${event.id}: ${event.type} for coupon ${coupon.id}`
+        )
+
+        await this.upsertCoupons([coupon], this.getSyncTimestamp(event, refetched))
+        break
+      }
       case 'customer.created':
       case 'customer.updated': {
         const { entity: customer, refetched } = await this.fetchOrUseWebhookData(
@@ -173,6 +189,22 @@ export class StripeSync {
         )
 
         await this.upsertCustomers([customer], this.getSyncTimestamp(event, refetched))
+        break
+      }
+      case 'customer.discount.created':
+      case 'customer.discount.deleted':
+      case 'customer.discount.updated': {
+        const { entity: discount, refetched } = await this.fetchOrUseWebhookData(
+          event.data.object as Stripe.Discount,
+          async (_) => event.data.object as Stripe.Discount
+        )
+
+        this.config.logger?.info(
+          `Received webhook ${event.id}: ${event.type} for discount ${discount.id}`
+        )
+
+        await this.updateCustomerDiscount(discount, this.getSyncTimestamp(event, refetched))
+
         break
       }
       case 'customer.subscription.created':
@@ -1246,6 +1278,43 @@ export class StripeSync {
         this.config.logger?.error(err, 'Failed to backfill')
         throw err
       })
+  }
+
+  async updateCustomerDiscount(
+    discount: Stripe.Discount,
+    syncTimestamp?: string
+  ): Promise<Stripe.Discount> {
+    const query = await this.postgresClient.query(
+      `SELECT * 
+       FROM "${this.config.schema}"."customers" 
+       WHERE deleted IS NOT TRUE AND id = $1::text`,
+      [discount.customer?.toString() ?? '']
+    )
+
+    if (query.rows.length === 0) {
+      return discount
+    }
+    const customer = query.rows[0] as Stripe.Customer
+
+    customer.discount = discount
+
+    await this.upsertCustomers([customer], syncTimestamp)
+
+    return discount
+  }
+
+  async upsertCoupons(coupons: Stripe.Coupon[], syncTimestamp?: string): Promise<Stripe.Coupon[]> {
+    // const deleted = coupons.filter((coupon) => coupon.deleted)
+    const nonDeleted = coupons.filter((coupon) => !coupon.deleted)
+
+    await this.postgresClient.upsertManyWithTimestampProtection(
+      nonDeleted,
+      'coupons',
+      couponSchema,
+      syncTimestamp
+    )
+
+    return coupons
   }
 
   async upsertDisputes(

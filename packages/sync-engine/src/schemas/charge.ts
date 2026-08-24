@@ -31,6 +31,7 @@ export const chargeSchema: EntitySchema = {
     'receipt_email',
     'payment_intent',
     'receipt_number',
+    'receipt_url',
     'transfer_group',
     'amount_refunded',
     'application_fee',

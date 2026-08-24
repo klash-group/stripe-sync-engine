@@ -9,6 +9,7 @@ export const taxIdSchema: EntitySchema = {
     'value',
     'object',
     'created',
+    'verification',
     'livemode',
     'owner',
   ],
